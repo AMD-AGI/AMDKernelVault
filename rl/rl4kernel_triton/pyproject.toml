@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "amdkernelvault-triton-rl"
+version = "0.1.0"
+description = "Multi-turn Triton reinforcement learning with Slime on AMD GPUs"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE.md"]
+dependencies = ["aiohttp>=3.10,<4"]
+
+[project.optional-dependencies]
+evaluation = ["numpy>=1.26,<3", "pytest>=8,<9"]
+test = ["pytest>=8,<9", "pytest-asyncio>=0.24,<2", "numpy>=1.26,<3"]
+dev = ["ruff>=0.9,<1", "build>=1,<2"]
+
+[project.scripts]
+triton-rl-train = "triton_rl.launcher:main"
+triton-rl-check = "triton_rl.preflight:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+triton_rl = ["paper.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

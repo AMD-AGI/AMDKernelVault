@@ -1,0 +1,28 @@
+# Copyright (c) 2026 Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Build from the rl4kernel_triton directory.
+FROM rocm/pytorch:rocm6.4.4_ubuntu22.04_py3.10_pytorch_release_2.7.1@sha256:0190ecdc22aa9984e37906b634c477a02bb7edb3c1ab1340df6c81dfc530fb51
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ENV PATH=/opt/triton-evaluator/bin:/opt/conda/envs/py_3.10/bin:${PATH} \
+    PYTHONPATH=/opt/triton-rl/src \
+    PYTHONUNBUFFERED=1
+
+# Use the official PyTorch pairing for the benchmark compiler version.
+# The environment does not inherit packages from the base conda environment.
+RUN /opt/conda/envs/py_3.10/bin/python -m venv /opt/triton-evaluator \
+    && /opt/triton-evaluator/bin/python -m pip install --no-cache-dir \
+       --index-url https://download.pytorch.org/whl/rocm6.3 \
+       "torch==2.7.0+rocm6.3" "pytorch-triton-rocm==3.3.0" \
+    && /opt/triton-evaluator/bin/python -m pip install --no-cache-dir \
+       "setuptools==80.9.0" "wheel==0.45.1" \
+       "aiohttp==3.12.15" "pytest==8.4.2" "numpy==1.26.4"
+
+WORKDIR /opt/triton-rl
+COPY . /opt/triton-rl
+RUN python -m pip install --no-deps --no-build-isolation -e /opt/triton-rl \
+    && chmod +x /opt/triton-rl/docker/start_evaluator.sh \
+    && python -m triton_rl.preflight evaluator --no-gpu
+
+EXPOSE 8080
+CMD ["/opt/triton-rl/docker/start_evaluator.sh"]
