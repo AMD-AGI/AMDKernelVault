@@ -55,13 +55,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["openai", "standard-openai", "claude", "standard-claude", "gemini"],
         help="LLM provider adapter.",
     )
-    parser.add_argument("--model-id", default="dvue-aoai-001-gpt-5", help="Provider-specific model identifier.")
+    parser.add_argument("--model-id", default="gpt-4o", help="Provider-specific model identifier. Default is gpt-4o.")
     parser.add_argument(
         "--api-key",
         default=None,
         help=(
-            "LLM API key. Defaults to PY_HIP_KERNEL2KERNEL_API_KEY; "
-            "HIP2HIP_API_KEY, TORCH2HIP_API_KEY, and TORCH_MODU2FUNC_API_KEY are also accepted."
+            "LLM API key. The package checks PY_HIP_KERNEL2KERNEL_API_KEY, HIP2HIP_API_KEY, "
+            "TORCH2HIP_API_KEY, and TORCH_MODU2FUNC_API_KEY first. "
+            "It then checks OPENAI_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY/GOOGLE_API_KEY for the selected provider."
         ),
     )
     parser.add_argument("--max-attempts", type=int, default=5, help="Maximum optimized kernel candidates per sample.")
@@ -147,6 +148,8 @@ def main() -> None:
         overwrite=args.overwrite,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
+        provider=args.provider,
+        model_id=args.model_id,
         python_load_timeout_seconds=args.python_load_timeout_seconds,
         hip_compile_timeout_seconds=args.hip_compile_timeout_seconds,
         execution_timeout_seconds=args.execution_timeout_seconds,

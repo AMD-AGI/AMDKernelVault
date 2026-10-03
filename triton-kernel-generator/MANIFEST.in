@@ -1,0 +1,6 @@
+include README.md PROTOCOL.md PAPER_ALIGNMENT.md LICENSE NOTICE.md
+recursive-include src *.py
+recursive-include scripts *.sh *.py
+recursive-include docker Dockerfile* *.sh
+recursive-include tests *.py
+global-exclude *.py[cod]

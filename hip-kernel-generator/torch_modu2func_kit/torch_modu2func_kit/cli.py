@@ -29,15 +29,24 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["openai", "standard-openai", "claude", "standard-claude", "gemini"],
         help="LLM provider adapter.",
     )
-    parser.add_argument("--model-id", default="dvue-aoai-001-gpt-5", help="Provider-specific model identifier.")
-    parser.add_argument("--api-key", default=None, help="LLM API key. Defaults to TORCH_MODU2FUNC_API_KEY.")
+    parser.add_argument(
+        "--model-id",
+        default=None,
+        help="Model identifier. Defaults: gpt-4o, claude-sonnet-4-20250514, or gemini-2.5-pro.",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help=("API key. Checks TORCH_MODU2FUNC_API_KEY, then OPENAI_API_KEY, "
+              "ANTHROPIC_API_KEY, or GEMINI_API_KEY for the selected provider."),
+    )
     parser.add_argument("--max-attempts", type=int, default=5, help="Maximum attempts per sample.")
     parser.add_argument("--rtol", type=float, default=1e-4, help="Relative tolerance for output comparison.")
     parser.add_argument("--atol", type=float, default=1e-4, help="Absolute tolerance for output comparison.")
     parser.add_argument("--seed", type=int, default=1234, help="Deterministic seed for verification.")
     parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature for generation.")
     parser.add_argument("--max-tokens", type=int, default=5000, help="Maximum tokens per generation call.")
-    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing successful output files.")
+    parser.add_argument("--overwrite", action="store_true", help="Generate and verify replacements for existing output files.")
     return parser
 
 

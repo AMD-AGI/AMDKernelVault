@@ -26,6 +26,8 @@ class PipelineConfig:
     overwrite: bool = False
     temperature: float = 0.0
     max_tokens: int = 12000
+    provider: str | None = None
+    model_id: str | None = None
     python_load_timeout_seconds: float | None = 60.0
     hip_compile_timeout_seconds: float | None = 900.0
     execution_timeout_seconds: float | None = 300.0
@@ -111,3 +113,5 @@ class ConversionRecord:
     baseline_latency_ms: float | None = None
     final_error: str | None = None
     skip_reason: str | None = None
+    input_fingerprint: str | None = None
+    output_sha256: str | None = None

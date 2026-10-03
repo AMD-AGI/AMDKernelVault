@@ -296,7 +296,7 @@ at::Tensor module_fn(
 
     float global_sum = global_sum_tensor.item<float>();
     float mean_val = global_sum / static_cast<float>(total_elements);
-    return torch::tensor({mean_val}, options);
+    return torch::tensor(mean_val, options);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

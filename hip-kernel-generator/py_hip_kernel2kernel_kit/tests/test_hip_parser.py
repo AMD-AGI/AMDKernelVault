@@ -6,6 +6,7 @@ from py_hip_kernel2kernel_kit.hip_parser import (
     replace_function_body,
     select_optimization_target,
 )
+import pytest
 
 
 HIP_SOURCE = """
@@ -172,3 +173,27 @@ if (idx < n) {
     assert "__global__ void sample_kernel(const float* x, float* out, int n) {" in replaced
     assert "out[idx] = x[idx];" in replaced
     assert "out[idx] = value + 1.0f;" not in replaced
+
+
+def test_extracts_adjacent_definitions_on_one_line() -> None:
+    source = "__device__ int first() { return 1; } __device__ int second() { return 2; }"
+    functions = extract_gpu_functions(source)
+    assert [function.name for function in functions] == ["first", "second"]
+    assert "first" not in functions[1].full_text
+    replaced = replace_function_body(source, functions[1], "return 3;")
+    assert "first() { return 1; }" in replaced
+    assert "return 3;" in replaced
+
+
+@pytest.mark.parametrize("source, name", [
+    ("__device__ float add(float a, float b) noexcept(true) { return a + b; }", "add"),
+    ("__device__ int add(int x = helper(1)) { return x; }", "add"),
+    ("__global__ void k(float* x) __attribute__((amdgpu_flat_work_group_size(1, 256))) { x[0] = 1; }", "k"),
+    ("__device__ float apply(float (*fn)(float), float x) { return fn(x); }", "apply"),
+    ("namespace n { __global__ void k(float* x) { x[0] = 1; } }", "k"),
+    ("__device__ decltype(helper(1)) add(int x) { return x; }", "add"),
+])
+def test_extracts_function_name_before_nested_or_trailing_parentheses(source: str, name: str) -> None:
+    functions = extract_gpu_functions(source)
+    assert len(functions) == 1
+    assert functions[0].name == name

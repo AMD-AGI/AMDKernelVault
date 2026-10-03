@@ -22,8 +22,20 @@ def load_python_module(module_path: Path, module_name: str) -> ModuleType:
     if spec is None or spec.loader is None:
         raise ImportError(f"Unable to create import spec for {_path_text(module_path)}.")
     module = importlib.util.module_from_spec(spec)
+    missing = object()
+    previous_module = sys.modules.get(module_name, missing)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    try:
+        # Generated files can change without a timestamp or size change.
+        # Compile the current bytes instead of accepting cached bytecode.
+        exec(compile(module_path.read_bytes(), str(module_path), "exec", dont_inherit=True), module.__dict__)
+    except BaseException:
+        if sys.modules.get(module_name) is module:
+            if previous_module is missing:
+                sys.modules.pop(module_name, None)
+            else:
+                sys.modules[module_name] = previous_module
+        raise
     return module
 
 
@@ -65,6 +77,7 @@ def load_hip_forward(
         build_directory=str(build_dir),
         extra_include_paths=resolved_include_paths,
         extra_cuda_cflags=extra_cuda_cflags,
+        with_cuda=True,
         verbose=verbose,
     )
     if not hasattr(extension, "forward"):

@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import os
+import re
 from abc import ABC, abstractmethod
 from typing import Any
 
 import anthropic
 import openai
-import requests
 from tenacity import retry, stop_after_attempt, wait_random_exponential
 
 
@@ -20,6 +20,8 @@ class BaseModel(ABC):
 
 
 class StandardOpenAIModel(BaseModel):
+    _use_original_gpt5_parameters = True
+
     def __init__(self, model_id: str = "gpt-4o", api_key: str | None = None):
         if api_key is None:
             raise ValueError("No API key provided.")
@@ -28,46 +30,18 @@ class StandardOpenAIModel(BaseModel):
 
     @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(5))
     def generate(self, messages: list[dict[str, Any]], temperature: float = 0.0, max_tokens: int = 12000, **_: Any) -> str:
+        if self._use_original_gpt5_parameters and re.fullmatch(
+            r"gpt-5(?:-(?:mini|nano))?(?:-2025-\d{2}-\d{2})?", self.model_id
+        ):
+            generation_options = {"max_completion_tokens": max_tokens}
+        else:
+            generation_options = {"temperature": temperature, "max_tokens": max_tokens}
         response = self.client.chat.completions.create(
             model=self.model_id,
             messages=messages,
-            temperature=temperature,
             n=1,
             stream=False,
-            max_tokens=max_tokens,
-        )
-        if not response.choices:
-            raise ValueError("No response choices returned from the API.")
-        return response.choices[0].message.content or ""
-
-
-class OpenAIModel(BaseModel):
-    def __init__(
-        self,
-        model_id: str = "GPT4o",
-        model_api_version: str = "2024-06-01",
-        api_key: str | None = None,
-    ):
-        if api_key is None:
-            raise ValueError("No API key provided.")
-        self.model_id = model_id
-        self.client = openai.AzureOpenAI(
-            api_key="dummy",
-            api_version=model_api_version,
-            base_url="https://llm-api.amd.com",
-            default_headers={"Ocp-Apim-Subscription-Key": api_key},
-        )
-        self.client.base_url = f"https://llm-api.amd.com/openai/deployments/{self.model_id}"
-
-    @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(5))
-    def generate(self, messages: list[dict[str, Any]], temperature: float = 1.0, max_tokens: int = 12000, **_: Any) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model_id,
-            messages=messages,
-            temperature=temperature,
-            n=1,
-            stream=False,
-            max_tokens=min(max_tokens, 16000),
+            **generation_options,
         )
         if not response.choices:
             raise ValueError("No response choices returned from the API.")
@@ -94,94 +68,60 @@ class StandardClaudeModel(BaseModel):
         return response.content[0].text
 
 
-class ClaudeModel(BaseModel):
-    def __init__(self, model_id: str = "claude-sonnet-4", api_key: str | None = None):
+# Preserve the existing import names for the public provider clients.
+OpenAIModel = StandardOpenAIModel
+ClaudeModel = StandardClaudeModel
+
+
+class GeminiModel(StandardOpenAIModel):
+    _use_original_gpt5_parameters = False
+
+    def __init__(self, model_id: str = "gemini-2.5-pro", api_key: str | None = None):
         if api_key is None:
             raise ValueError("No API key provided.")
         self.model_id = model_id
-        self.server = "https://llm-api.amd.com/claude3"
-        self.headers = {"Ocp-Apim-Subscription-Key": api_key}
-
-    @retry(wait=wait_random_exponential(min=5, max=60), stop=stop_after_attempt(5))
-    def generate(self, messages: list[dict[str, Any]], temperature: float = 1.0, max_tokens: int = 16000, **_: Any) -> str:
-        response = requests.post(
-            url=f"{self.server}/{self.model_id}/chat/completions",
-            json={
-                "messages": messages,
-                "temperature": temperature,
-                "stream": False,
-                "max_completion_tokens": min(max_tokens, 16000),
-                "max_tokens": min(max_tokens, 16000),
-                "presence_Penalty": 0,
-                "frequency_Penalty": 0,
-            },
-            headers=self.headers,
-            timeout=600,
+        self.client = openai.OpenAI(
+            api_key=api_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         )
-        if response.status_code != 200:
-            raise ValueError(f"API returned status {response.status_code}: {response.text}")
-        result = response.json()
-        if "content" in result and result["content"]:
-            return result["content"][0]["text"]
-        if "choices" in result and result["choices"]:
-            return result["choices"][0]["message"]["content"]
-        raise ValueError(f"Unexpected response format: {result}")
 
-
-class GeminiModel(BaseModel):
-    def __init__(self, model_id: str = "gemini-2.5-pro-preview-05-06", api_key: str | None = None):
-        if api_key is None:
-            raise ValueError("No API key provided.")
-        self.model_id = model_id
-        self.server = "https://llm-api.amd.com/vertex/gemini"
-        self.headers = {"Ocp-Apim-Subscription-Key": api_key}
-
-    @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(5))
-    def generate(self, messages: list[dict[str, Any]], temperature: float = 1.0, max_tokens: int = 30000, **_: Any) -> str:
-        response = requests.post(
-            url=f"{self.server}/{self.model_id}/chat",
-            json={
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "top_P": 0.95,
-                "presence_Penalty": 0,
-                "frequency_Penalty": 0,
-            },
-            headers=self.headers,
-            timeout=600,
+    def generate(self, messages: list[dict[str, Any]], temperature: float = 1.0, max_tokens: int = 30000, **kwargs: Any) -> str:
+        return super().generate(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **kwargs,
         )
-        if response.status_code != 200:
-            raise ValueError(f"API returned status {response.status_code}: {response.text}")
-        result = response.json()
-        return result["candidates"][0]["content"]["parts"][0]["text"]
 
 
-def create_model_client(provider: str, model_id: str, api_key: str | None):
-    resolved_api_key = (
-        api_key
-        or os.getenv("PY_HIP_KERNEL2KERNEL_API_KEY")
-        or os.getenv("HIP2HIP_API_KEY")
-        or os.getenv("TORCH2HIP_API_KEY")
-        or os.getenv("TORCH_MODU2FUNC_API_KEY")
+def create_model_client(provider: str, model_id: str, api_key: str | None) -> BaseModel:
+    providers = {
+        "openai": (OpenAIModel, ("OPENAI_API_KEY",)),
+        "standard-openai": (StandardOpenAIModel, ("OPENAI_API_KEY",)),
+        "claude": (ClaudeModel, ("ANTHROPIC_API_KEY",)),
+        "standard-claude": (StandardClaudeModel, ("ANTHROPIC_API_KEY",)),
+        "gemini": (GeminiModel, ("GEMINI_API_KEY", "GOOGLE_API_KEY")),
+    }
+    normalized = provider.strip().lower()
+    if normalized not in providers:
+        raise ValueError(f"Unsupported provider '{provider}'. Expected one of {list(providers)}.")
+
+    model_class, provider_env_vars = providers[normalized]
+    key_env_vars = (
+        "PY_HIP_KERNEL2KERNEL_API_KEY",
+        "HIP2HIP_API_KEY",
+        "TORCH2HIP_API_KEY",
+        "TORCH_MODU2FUNC_API_KEY",
+        *provider_env_vars,
     )
+    resolved_api_key = api_key
+    for name in key_env_vars:
+        if resolved_api_key:
+            break
+        resolved_api_key = os.getenv(name)
     if not resolved_api_key:
         raise ValueError(
-            "An API key is required. Pass --api-key or set PY_HIP_KERNEL2KERNEL_API_KEY "
-            "(HIP2HIP_API_KEY, TORCH2HIP_API_KEY, and TORCH_MODU2FUNC_API_KEY are also accepted)."
+            f"An API key is required. Pass --api-key or set one of: {', '.join(key_env_vars)}."
         )
 
-    normalized = provider.strip().lower()
-    if normalized == "openai":
-        return OpenAIModel(api_key=resolved_api_key, model_id=model_id)
-    if normalized == "standard-openai":
-        return StandardOpenAIModel(api_key=resolved_api_key, model_id=model_id)
-    if normalized == "claude":
-        return ClaudeModel(api_key=resolved_api_key, model_id=model_id)
-    if normalized == "standard-claude":
-        return StandardClaudeModel(api_key=resolved_api_key, model_id=model_id)
-    if normalized == "gemini":
-        return GeminiModel(api_key=resolved_api_key, model_id=model_id)
-
-    supported = ["openai", "standard-openai", "claude", "standard-claude", "gemini"]
-    raise ValueError(f"Unsupported provider '{provider}'. Expected one of {supported}.")
+    return model_class(api_key=resolved_api_key, model_id=model_id)

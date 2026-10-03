@@ -13,6 +13,7 @@ data-generation/evaluation tooling needed to run them:
 2. Supervised fine-tuning (`sft`)
 3. Reinforcement learning (`rl`)
 4. HIP kernel data generation and optimization (`hip-kernel-generator`)
+5. Triton kernel generation and verification (`triton-kernel-generator`)
 
 ## Repository Layout
 
@@ -22,6 +23,7 @@ hip_kernel_llm_lab/
 ├── sft/                    # supervised fine-tuning launchers and configs
 ├── rl/                     # veRL-based HIP kernel reinforcement learning stack
 ├── hip-kernel-generator/   # LLM-assisted PyTorch/HIP data generation tools
+├── triton-kernel-generator/ # Triton generation with fixed AMD verification cases
 ├── examples/               # example data, recipes, and usage samples
 ├── .github/                # repository metadata such as CODEOWNERS
 ├── LICENSE
@@ -70,6 +72,18 @@ The intended high-level training flow is:
 2. Use supervised fine-tuning to teach task-oriented instruction behavior.
 3. Use reinforcement learning to optimize for downstream quality signals such as
    correctness, preference alignment, and performance-related objectives.
+
+## Triton Kernel Generation
+
+[`triton-kernel-generator/`](triton-kernel-generator/README.md) implements the
+TritonKernelGen construction workflow described in
+[AMDKernelVault](https://arxiv.org/html/2609.12471).
+It validates external PyTorch references, generates Triton candidates, and uses
+AMD correctness and latency feedback for further attempts.
+Prepared references and case collections remain external.
+
+The [HIP alignment note](hip-kernel-generator/PAPER_ALIGNMENT.md) explains the
+existing HIP workflow, its corrected verification paths, and its coverage limits.
 
 ## Dataset Resources
 

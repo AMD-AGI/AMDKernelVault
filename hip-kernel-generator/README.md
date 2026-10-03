@@ -128,6 +128,9 @@ pipeline.
 
 ## Quick Start
 
+Set `OPENAI_API_KEY` in the environment before using the OpenAI examples.
+
+
 ### 1. PyTorch module -> functional
 
 ```bash
@@ -136,8 +139,7 @@ torch-modu2func \
   --output-dir ../kernelbench_torch_func \
   --artifacts-dir .artifacts \
   --provider openai \
-  --model-id dvue-aoai-001-gpt-5 \
-  --api-key YOUR_API_KEY
+  --model-id gpt-5
 ```
 
 ### 2. PyTorch module -> HIP
@@ -149,8 +151,7 @@ torch2hip \
   --output-dir ./output_hip \
   --artifacts-dir .artifacts \
   --provider openai \
-  --model-id dvue-aoai-001-gpt-5 \
-  --api-key YOUR_API_KEY
+  --model-id gpt-5
 ```
 
 ### 3. HIP -> optimized HIP
@@ -165,8 +166,7 @@ py-hip-kernel2kernel \
   --output-dir ./optimized_output_l1_hip \
   --artifacts-dir .artifacts \
   --provider openai \
-  --model-id dvue-aoai-001-gpt-5 \
-  --api-key YOUR_API_KEY
+  --model-id gpt-5
 ```
 
 For full argument descriptions, environment-variable fallbacks, and operational
@@ -232,3 +232,8 @@ See [`.github/CODEOWNERS`](.github/CODEOWNERS) for the ownership list.
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
+
+## AMDKernelVault correspondence
+
+See [PAPER_ALIGNMENT.md](PAPER_ALIGNMENT.md) for the implemented HIP workflow and its validation limits.
+The separate [Triton generator](../triton-kernel-generator/README.md) adds fixed-case Triton construction and AMD verification.

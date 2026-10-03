@@ -28,13 +28,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--provider",
         default="openai",
         choices=["openai", "standard-openai", "claude", "standard-claude", "gemini"],
-        help="LLM provider adapter.",
+        help="Public LLM provider. The standard-openai and standard-claude names are aliases.",
     )
-    parser.add_argument("--model-id", default="dvue-aoai-001-gpt-5", help="Provider-specific model identifier.")
+    parser.add_argument("--model-id", default="gpt-4o", help="Provider-specific model identifier.")
     parser.add_argument(
         "--api-key",
         default=None,
-        help="LLM API key. Defaults to TORCH2HIP_API_KEY; TORCH_MODU2FUNC_API_KEY is also accepted.",
+        help=(
+            "LLM API key. The client checks TORCH2HIP_API_KEY, then TORCH_MODU2FUNC_API_KEY, "
+            "then OPENAI_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY/GOOGLE_API_KEY for the selected provider."
+        ),
     )
     parser.add_argument("--max-attempts", type=int, default=5, help="Maximum HIP candidates per sample.")
     parser.add_argument("--rtol", type=float, default=1e-4, help="Relative tolerance for output comparison.")

@@ -82,3 +82,5 @@ class ConversionRecord:
     best_attempt: int | None = None
     best_speedup: float | None = None
     final_error: str | None = None
+    input_fingerprint: str | None = None
+    output_sha256: str | None = None

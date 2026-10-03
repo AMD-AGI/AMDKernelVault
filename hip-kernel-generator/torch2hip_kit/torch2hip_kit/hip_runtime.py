@@ -23,7 +23,8 @@ def load_python_module(module_path: Path, module_name: str) -> ModuleType:
         raise ImportError(f"Unable to create import spec for {_path_text(module_path)}.")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    # Read current source bytes instead of reusing timestamp-based bytecode.
+    exec(compile(module_path.read_bytes(), str(module_path), "exec", dont_inherit=True), module.__dict__)
     return module
 
 

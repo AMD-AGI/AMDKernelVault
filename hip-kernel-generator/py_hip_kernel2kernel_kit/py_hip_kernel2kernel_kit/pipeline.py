@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import tempfile
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
@@ -32,7 +34,77 @@ def _write_text(path: Path, content: str) -> None:
 
 def _write_json(path: Path, payload) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    content = json.dumps(payload, indent=2, ensure_ascii=False)
+    if path.exists() and path.read_text(encoding="utf-8") == content:
+        return
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(content)
+        temporary_path.replace(path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _input_fingerprint(source_path: Path, config: PipelineConfig) -> str:
+    module_path = module_path_for_hip(source_path, config.baseline_hip_dir, config.module_dir)
+    functional_path = functional_path_for_hip(source_path, config.baseline_hip_dir, config.functional_dir)
+    source_files = {source_path, module_path, functional_path}
+    # Candidate compilation can use sibling headers and the baseline include tree.
+    source_files.update(path for path in source_path.parent.iterdir() if path.is_file() and path.suffix in {".h", ".hpp", ".hxx", ".cuh", ".inc"})
+    include_dir = source_path.parent / "include"
+    if include_dir.is_dir():
+        source_files.update(path for path in include_dir.rglob("*") if path.is_file())
+    setting_names = (
+        "target_function_mode", "max_attempts", "rtol", "atol", "seed", "temperature", "max_tokens",
+        "provider", "model_id", "perf_warmup", "perf_iterations", "history_code_char_limit",
+        "history_feedback_char_limit", "system_instruction", "few_shot_examples", "offload_arch",
+    )
+    payload = {
+        "verification_protocol": 1,
+        "sources": {path.resolve().as_posix(): _file_sha256(path) for path in sorted(source_files)},
+        "settings": {name: getattr(config, name) for name in setting_names},
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _success_reuse_error(record: ConversionRecord | None, source_path: Path, config: PipelineConfig) -> str | None:
+    if record is None or record.status != "success":
+        return "The output has no verified success record."
+    output_path = output_path_for_hip(source_path, config.baseline_hip_dir, config.output_dir)
+    if Path(record.output_path).resolve() != output_path.resolve():
+        return "The saved record refers to a different output path."
+    if not record.input_fingerprint or not record.output_sha256:
+        return "The saved record has no source and output fingerprints."
+    try:
+        if record.input_fingerprint != _input_fingerprint(source_path, config):
+            return "The inputs or configuration changed since verification."
+        if record.output_sha256 != _file_sha256(output_path):
+            return "The output changed since verification."
+    except OSError as exc:
+        return f"The pipeline cannot verify the saved files: {exc}"
+    return None
+
+
+def _output_conflict_record(source_path: Path, config: PipelineConfig, reason: str) -> ConversionRecord:
+    relative_path = source_path.relative_to(config.baseline_hip_dir)
+    return ConversionRecord(
+        baseline_hip_source_path=_path_text(source_path),
+        module_source_path=_path_text(config.module_dir / relative_path.with_suffix(".py")),
+        functional_source_path=_path_text(config.functional_dir / relative_path.with_suffix(".py")),
+        relative_path=_path_text(relative_path),
+        output_path=_path_text(output_path_for_hip(source_path, config.baseline_hip_dir, config.output_dir)),
+        status="failed",
+        attempts_used=0,
+        target_function_mode=config.target_function_mode,
+        final_error=f"{reason} Use --overwrite to regenerate the existing output.",
+    )
 
 
 def _format_exception(context: str, exc: Exception) -> str:
@@ -68,14 +140,17 @@ def _persist_success_case_records(config: PipelineConfig, successes: list[dict[s
         return
 
     config.success_cases_dir.mkdir(parents=True, exist_ok=True)
-    for existing_file in config.success_cases_dir.rglob("*.json"):
-        existing_file.unlink()
-
+    expected_files: set[Path] = set()
     for record in successes:
         relative_path = record.get("relative_path")
         if not relative_path:
             continue
-        _write_json(_success_case_record_path(config.success_cases_dir, relative_path), record)
+        record_path = _success_case_record_path(config.success_cases_dir, relative_path)
+        expected_files.add(record_path)
+        _write_json(record_path, record)
+    for existing_file in config.success_cases_dir.rglob("*.json"):
+        if existing_file not in expected_files:
+            existing_file.unlink()
 
 
 def _persist_records(config: PipelineConfig, records: list[ConversionRecord]) -> None:
@@ -172,7 +247,7 @@ def _conversion_record_from_dict(payload: dict[str, Any]) -> ConversionRecord:
 
 
 def _load_existing_records(config: PipelineConfig) -> dict[str, ConversionRecord]:
-    if not config.resume or config.records_file is None or not config.records_file.exists():
+    if config.records_file is None or not config.records_file.exists():
         return {}
 
     try:
@@ -272,6 +347,7 @@ def convert_single_file(source_path: Path, client, config: PipelineConfig) -> Co
     hip_code = source_path.read_text(encoding="utf-8")
     module_code = module_path.read_text(encoding="utf-8")
     functional_code = functional_path.read_text(encoding="utf-8")
+    input_fingerprint = _input_fingerprint(source_path, config)
 
     try:
         gpu_functions = extract_gpu_functions(hip_code)
@@ -462,6 +538,8 @@ def convert_single_file(source_path: Path, client, config: PipelineConfig) -> Co
             baseline_correctness_success=baseline_result.correctness_success,
             module_latency_ms=baseline_result.module_latency_ms,
             baseline_latency_ms=baseline_result.baseline_latency_ms,
+            input_fingerprint=input_fingerprint,
+            output_sha256=_file_sha256(output_path),
         )
 
     return ConversionRecord(
@@ -505,15 +583,25 @@ def run_optimization_pipeline(client, config: PipelineConfig) -> dict[str, int]:
         relative_path = _path_text(source_path.relative_to(config.baseline_hip_dir))
         existing_record = existing_records.get(relative_path)
 
+        output_path = output_path_for_hip(source_path, config.baseline_hip_dir, config.output_dir)
+        if output_path.exists() and not config.overwrite:
+            reuse_error = _success_reuse_error(existing_record, source_path, config)
+            records[index] = (
+                existing_record if reuse_error is None else _output_conflict_record(source_path, config, reuse_error)
+            )
+            continue
+
+        # Missing outputs and all prior failures must run again, including in resume mode.
+        pending_tasks.append((index, source_path))
         if existing_record is not None:
-            records[index] = existing_record
+            preserve_success = (
+                config.overwrite and existing_record.status == "success" and output_path.exists()
+            )
+            if existing_record.status == "failed" or preserve_success:
+                # Keep the prior result until the pending replacement returns.
+                records[index] = existing_record
 
-        should_rerun = config.overwrite or existing_record is None or existing_record.status == "failed"
-        if should_rerun:
-            pending_tasks.append((index, source_path))
-
-    if any(record is not None for record in records):
-        _persist_completed_records(config, records)
+    _persist_completed_records(config, records)
 
     if config.num_workers == 1:
         for index, source_path in tqdm(pending_tasks, desc="Optimizing HIP files"):

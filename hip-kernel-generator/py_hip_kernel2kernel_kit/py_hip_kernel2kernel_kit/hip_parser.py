@@ -117,6 +117,15 @@ def _looks_like_declaration_prefix_line(line: str) -> bool:
 
 def _find_declaration_start(masked_source: str, qualifier_index: int) -> int:
     qualifier_line_start = masked_source.rfind("\n", 0, qualifier_index) + 1
+    # Another declaration or a namespace can precede the qualifier on this line.
+    # Starting at the line boundary would parse that earlier body repeatedly.
+    line_prefix = masked_source[qualifier_line_start:qualifier_index]
+    preceding_boundary = max(line_prefix.rfind(char) for char in ";{}")
+    if preceding_boundary >= 0:
+        start = qualifier_line_start + preceding_boundary + 1
+        while start < qualifier_index and masked_source[start].isspace():
+            start += 1
+        return start
     declaration_start = qualifier_line_start
     current_line_start = qualifier_line_start
 
@@ -164,11 +173,27 @@ def _find_matching_brace(source: str, opening_brace_index: int) -> int:
 
 
 def _extract_function_name(signature: str) -> str:
-    signature_prefix = signature[: signature.rfind("(")].rstrip()
-    match = re.search(r"([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*$", signature_prefix)
-    if not match:
-        raise ValueError(f"Unable to extract function name from signature: {signature!r}")
-    return match.group(1)
+    masked_signature = _mask_comments_and_strings(signature)
+    ignored_names = {"__launch_bounds__", "__attribute__", "__declspec", "alignas", "decltype", "noexcept"}
+    paren_depth = bracket_depth = angle_depth = 0
+    for index, char in enumerate(masked_signature):
+        if char == "(":
+            if paren_depth == bracket_depth == angle_depth == 0:
+                match = re.search(r"([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)\s*$", masked_signature[:index])
+                if match and match.group(1) not in ignored_names:
+                    return match.group(1)
+            paren_depth += 1
+        elif char == ")":
+            paren_depth = max(paren_depth - 1, 0)
+        elif char == "[" and paren_depth == 0:
+            bracket_depth += 1
+        elif char == "]" and paren_depth == 0:
+            bracket_depth = max(bracket_depth - 1, 0)
+        elif char == "<" and paren_depth == bracket_depth == 0:
+            angle_depth += 1
+        elif char == ">" and paren_depth == bracket_depth == 0:
+            angle_depth = max(angle_depth - 1, 0)
+    raise ValueError(f"Unable to extract function name from signature: {signature!r}")
 
 
 def _extract_qualifier(signature: str) -> str:
@@ -198,7 +223,7 @@ def extract_gpu_functions(source: str) -> list[GPUFunction]:
             body_end = _find_matching_brace(source, header_end)
             key = (declaration_start, body_end)
             if key in seen_ranges:
-                search_from = body_end + 1
+                search_from = max(body_end + 1, start + len(qualifier))
                 continue
             seen_ranges.add(key)
             signature = source[declaration_start:header_end].rstrip()
@@ -217,7 +242,7 @@ def extract_gpu_functions(source: str) -> list[GPUFunction]:
                     body_end=body_end,
                 )
             )
-            search_from = body_end + 1
+            search_from = max(body_end + 1, start + len(qualifier))
 
     return sorted(functions, key=lambda item: item.start)
 
