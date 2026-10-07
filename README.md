@@ -20,7 +20,7 @@ data-generation/evaluation tooling needed to run them:
 hip_kernel_llm_lab/
 ├── cpt/                    # continued pretraining launchers and configs
 ├── sft/                    # supervised fine-tuning launchers and configs
-├── rl/                     # veRL-based HIP kernel reinforcement learning stack
+├── rl/                     # HIP and Triton reinforcement learning stacks
 ├── hip-kernel-generator/   # LLM-assisted PyTorch/HIP data generation tools
 ├── examples/               # example data, recipes, and usage samples
 ├── .github/                # repository metadata such as CODEOWNERS
@@ -160,6 +160,15 @@ pip install -e ./py_hip_kernel2kernel_kit[dev]
 
 See `hip-kernel-generator/README.md` for package-specific CLI examples.
 
+### Multi-turn Triton Reinforcement Learning
+
+[`rl/rl4kernel_triton/`](rl/rl4kernel_triton/README.md) provides the multi-turn
+Triton training procedure described in
+[AMDKernelVault](https://arxiv.org/html/2609.12471).
+It includes a Slime adapter, a ROCm execution service, pinned container recipes,
+and a guide for the 32-MI325X training configuration.
+Prepared prompts, reference tests, and checkpoints remain external.
+
 ## Current Status
 
 This repository contains runnable assets for all main stages:
@@ -167,6 +176,8 @@ This repository contains runnable assets for all main stages:
 - `cpt/` and `sft/` provide LLaMA-Factory based launchers and training YAMLs.
 - `rl/rl4kernel_hip/` provides a veRL-based HIP kernel RL stack, reward code,
   dataset conversion docs, training launchers, and evaluation server tooling.
+- `rl/rl4kernel_triton/` provides Slime-based multi-turn Triton RL and an AMD
+  execution service, with code-only setup and validation tools.
 - `hip-kernel-generator/` provides installable tools for PyTorch-to-HIP and
   HIP-to-HIP generation/optimization workflows.
 - Stage-specific READMEs contain the operational details for each workflow.

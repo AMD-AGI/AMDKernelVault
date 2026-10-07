@@ -1,0 +1,26 @@
+{
+  "algorithm": {
+    "max_turns": 3,
+    "discount": 0.6,
+    "compile_reward": 0.4,
+    "correct_reward": 1.0,
+    "performance_scale": 0.375,
+    "performance_cap": 1.5
+  },
+  "training": {
+    "prompts_per_rollout": 64,
+    "samples_per_prompt": 8,
+    "epochs": 2.7,
+    "learning_rate": 0.000001,
+    "kl_coefficient": 0.01,
+    "clip_low": 0.2,
+    "clip_high": 0.28,
+    "sequence_length": 16384,
+    "total_gpus": 32
+  },
+  "evaluation": {
+    "atol": 0.001,
+    "rtol": 0.0001,
+    "equal_nan": false
+  }
+}

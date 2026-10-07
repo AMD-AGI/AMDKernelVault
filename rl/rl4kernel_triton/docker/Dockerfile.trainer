@@ -1,0 +1,34 @@
+# Copyright (c) 2026 Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Build from the rl4kernel_triton directory.
+FROM rlsys/slime:ubuntu22.04_rocm6.3.4_sglang0.5.0rc0_megatron_ray2.47.1_apex_torch-memory-saver0.0.8@sha256:80fe6e12ba7969e3169db8361e9cb89d67c714cf24288eaf1cda104211c241f5
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Preserve the image's patched Megatron, SGLang, and ROCm libraries.
+ENV SLIME_ROOT=/opt/slime \
+    SLIME_DIR=/opt/slime \
+    MEGATRON_LM_PATH=/workspace/Megatron-LM \
+    PYTHONPATH=/opt/slime:/workspace/Megatron-LM:/opt/triton-rl/src \
+    RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1 \
+    CUDA_DEVICE_MAX_CONNECTIONS=1 \
+    PYTHONUNBUFFERED=1
+
+RUN python -m pip install "setuptools==80.9.0" "wheel==0.45.1"
+
+RUN git init /opt/slime \
+    && git -C /opt/slime remote add origin https://github.com/THUDM/slime.git \
+    && git -C /opt/slime fetch --depth 1 origin 5f781608ba28738fc73f44fa12efef1cdb408ee2 \
+    && git -C /opt/slime checkout --detach FETCH_HEAD \
+    && test "$(git -C /opt/slime rev-parse HEAD)" = 5f781608ba28738fc73f44fa12efef1cdb408ee2 \
+    && python -m pip install --no-deps --no-build-isolation -e /opt/slime
+
+RUN python -m pip install "aiohttp==3.12.15"
+
+WORKDIR /opt/triton-rl
+COPY . /opt/triton-rl
+RUN python -m pip install --no-deps --no-build-isolation -e /opt/triton-rl \
+    && python scripts/patch_megatron_checkpoint.py --megatron-root "$MEGATRON_LM_PATH" \
+    && python -m triton_rl.preflight trainer --no-gpu
+
+CMD ["bash"]
