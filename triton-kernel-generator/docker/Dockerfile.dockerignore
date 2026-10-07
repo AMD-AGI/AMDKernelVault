@@ -1,0 +1,17 @@
+**
+!pyproject.toml
+!MANIFEST.in
+!README.md
+!PROTOCOL.md
+!PAPER_ALIGNMENT.md
+!LICENSE
+!NOTICE.md
+!src/
+!src/**
+!scripts/
+!scripts/**
+!docker/
+!docker/**
+**/__pycache__/
+**/*.pyc
+**/*.egg-info/

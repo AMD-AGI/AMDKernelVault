@@ -44,6 +44,11 @@ class AttemptRecord:
     feedback: str | None = None
     error: str | None = None
     mismatch: str | None = None
+    source_sha256: str | None = None
+    candidate_sha256: str | None = None
+    verification_seed: int | None = None
+    verification_rtol: float | None = None
+    verification_atol: float | None = None
 
 
 @dataclass(slots=True)
@@ -55,3 +60,9 @@ class ConversionRecord:
     attempts_used: int
     attempts: list[AttemptRecord] = field(default_factory=list)
     final_error: str | None = None
+    source_sha256: str | None = None
+    output_sha256: str | None = None
+    verification_seed: int | None = None
+    verification_rtol: float | None = None
+    verification_atol: float | None = None
+    skip_reason: str | None = None

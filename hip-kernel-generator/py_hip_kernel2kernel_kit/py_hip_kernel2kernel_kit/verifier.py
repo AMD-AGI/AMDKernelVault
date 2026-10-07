@@ -12,7 +12,7 @@ import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import torch
 
@@ -72,7 +72,9 @@ def _set_seed(seed: int) -> None:
 
 def _clone_value(value: Any) -> Any:
     if isinstance(value, torch.Tensor):
-        return value.clone()
+        # Tensor.clone() can remove storage gaps and expanded dimensions.
+        # Detach first because deepcopy rejects nonleaf tensors with gradients.
+        return copy.deepcopy(value.detach()).requires_grad_(value.requires_grad)
     if isinstance(value, list):
         return [_clone_value(item) for item in value]
     if isinstance(value, tuple):
@@ -104,6 +106,12 @@ def _normalize_call_args(value: Any) -> tuple[list[Any], dict[str, Any]]:
 
 def _move_to_device(value: Any, device: torch.device) -> Any:
     if isinstance(value, torch.Tensor):
+        if value.layout == torch.strided and not value.is_quantized:
+            # Transfer the storage so sliced and expanded inputs retain their layout.
+            storage_size = value.untyped_storage().nbytes() // value.element_size()
+            storage = value.detach().as_strided((storage_size,), (1,), 0)
+            moved = storage.to(device).as_strided(value.shape, value.stride(), value.storage_offset())
+            return moved.requires_grad_(value.requires_grad)
         return value.to(device)
     if isinstance(value, list):
         return [_move_to_device(item, device) for item in value]
@@ -128,6 +136,8 @@ def _compare_scalars(expected: Any, actual: Any, rtol: float, atol: float) -> tu
 
 def _compare_outputs(expected: Any, actual: Any, rtol: float, atol: float, path: str = "output") -> tuple[bool, str]:
     if isinstance(expected, torch.Tensor) and isinstance(actual, torch.Tensor):
+        if expected.shape != actual.shape:
+            return False, f"{path} tensor shape mismatch: expected {tuple(expected.shape)}, got {tuple(actual.shape)}."
         expected_cpu = expected.detach().cpu()
         actual_cpu = actual.detach().cpu()
         matches = torch.allclose(expected_cpu, actual_cpu, rtol=rtol, atol=atol, equal_nan=True)
@@ -161,6 +171,16 @@ def _compare_outputs(expected: Any, actual: Any, rtol: float, atol: float, path:
     if matches:
         return True, ""
     return False, f"{path} {detail}"
+
+
+class _TrackedForward:
+    def __init__(self, forward: Callable[..., Any]):
+        self.forward = forward
+        self.calls = 0
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls += 1
+        return self.forward(*args, **kwargs)
 
 
 def _normalize_timeout_seconds(timeout_seconds: float | None) -> float | None:
@@ -308,6 +328,7 @@ class VerificationContext:
         hip_compile_timeout_seconds: float | None = None,
         execution_timeout_seconds: float | None = None,
         benchmark_timeout_seconds: float | None = None,
+        extra_include_paths: Iterable[str] | None = None,
     ):
         self.functional_model = functional_model
         self.original_model = original_model
@@ -325,6 +346,7 @@ class VerificationContext:
         self.hip_compile_timeout_seconds = hip_compile_timeout_seconds
         self.execution_timeout_seconds = execution_timeout_seconds
         self.benchmark_timeout_seconds = benchmark_timeout_seconds
+        self.extra_include_paths = tuple(extra_include_paths or ())
 
     def verify_candidate(
         self,
@@ -343,6 +365,7 @@ class VerificationContext:
                     build_dir,
                     verbose=False,
                     offload_arch=self.offload_arch,
+                    extra_include_paths=self.extra_include_paths,
                 ),
                 phase=current_phase,
                 timeout_seconds=self.hip_compile_timeout_seconds,
@@ -351,15 +374,25 @@ class VerificationContext:
 
             current_phase = "execute candidate HIP forward"
             _set_seed(self.seed)
+            tracked_candidate_fn = _TrackedForward(candidate_fn)
             actual = _run_with_timeout(
                 lambda: self.functional_model(
                     *_clone_value(self.forward_args),
                     **_clone_value(self.forward_kwargs),
-                    fn=candidate_fn,
+                    fn=tracked_candidate_fn,
                 ),
                 phase=current_phase,
                 timeout_seconds=self.execution_timeout_seconds,
             )
+            if tracked_candidate_fn.calls == 0:
+                return CandidateVerificationResult(
+                    False,
+                    "The functional model did not call the candidate HIP forward function.",
+                    compile_success=compile_success,
+                    correctness_success=False,
+                    module_latency_ms=self.module_latency_ms,
+                    baseline_latency_ms=self.baseline_latency_ms,
+                )
             matches, detail = _compare_outputs(self.expected_output, actual, self.rtol, self.atol)
             if not matches:
                 return CandidateVerificationResult(
@@ -554,15 +587,27 @@ def prepare_verification_context(
 
         current_phase = "execute baseline HIP forward"
         _set_seed(seed)
+        tracked_baseline_fn = _TrackedForward(baseline_fn)
         baseline_output = _run_with_timeout(
             lambda: functional_model(
                 *_clone_value(forward_args),
                 **_clone_value(forward_kwargs),
-                fn=baseline_fn,
+                fn=tracked_baseline_fn,
             ),
             phase=current_phase,
             timeout_seconds=execution_timeout_seconds,
         )
+
+        if tracked_baseline_fn.calls == 0:
+            return (
+                BaselineVerificationResult(
+                    False,
+                    "The functional model did not call the baseline HIP forward function.",
+                    compile_success=compile_success,
+                    correctness_success=False,
+                ),
+                None,
+            )
 
         matches, detail = _compare_outputs(expected_output, baseline_output, rtol, atol)
         if not matches:
@@ -630,6 +675,10 @@ def prepare_verification_context(
             hip_compile_timeout_seconds=hip_compile_timeout_seconds,
             execution_timeout_seconds=execution_timeout_seconds,
             benchmark_timeout_seconds=benchmark_timeout_seconds,
+            extra_include_paths=(
+                str(baseline_hip_path.parent.resolve()),
+                str((baseline_hip_path.parent / "include").resolve()),
+            ),
         )
         return result, context
     except VerificationTimeoutError as exc:

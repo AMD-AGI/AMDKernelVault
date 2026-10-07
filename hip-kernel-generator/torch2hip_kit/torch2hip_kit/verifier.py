@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import math
 import random
 import traceback
@@ -51,7 +52,9 @@ def _set_seed(seed: int) -> None:
 
 def _clone_value(value: Any) -> Any:
     if isinstance(value, torch.Tensor):
-        return value.clone()
+        # Deepcopy preserves sliced and overlapping views, including their strides.
+        # Verification needs independent values, but it does not need a gradient graph.
+        return copy.deepcopy(value.detach()).requires_grad_(value.requires_grad)
     if isinstance(value, list):
         return [_clone_value(item) for item in value]
     if isinstance(value, tuple):
@@ -83,7 +86,14 @@ def _normalize_call_args(value: Any) -> tuple[list[Any], dict[str, Any]]:
 
 def _move_to_device(value: Any, device: torch.device) -> Any:
     if isinstance(value, torch.Tensor):
-        return value.to(device)
+        if value.layout != torch.strided or value.is_quantized:
+            return value.to(device)
+        source = value.detach()
+        storage_elements = source.untyped_storage().nbytes() // source.element_size()
+        storage_view = source.as_strided((storage_elements,), (1,), 0)
+        moved_storage = storage_view.to(device)
+        moved = moved_storage.as_strided(source.shape, source.stride(), source.storage_offset())
+        return moved.requires_grad_(value.requires_grad)
     if isinstance(value, list):
         return [_move_to_device(item, device) for item in value]
     if isinstance(value, tuple):
@@ -107,6 +117,8 @@ def _compare_scalars(expected: Any, actual: Any, rtol: float, atol: float) -> tu
 
 def _compare_outputs(expected: Any, actual: Any, rtol: float, atol: float, path: str = "output") -> tuple[bool, str]:
     if isinstance(expected, torch.Tensor) and isinstance(actual, torch.Tensor):
+        if expected.shape != actual.shape:
+            return False, f"{path} shape mismatch: expected {tuple(expected.shape)}, got {tuple(actual.shape)}."
         expected_cpu = expected.detach().cpu()
         actual_cpu = actual.detach().cpu()
         matches = torch.allclose(expected_cpu, actual_cpu, rtol=rtol, atol=atol, equal_nan=True)
@@ -140,6 +152,31 @@ def _compare_outputs(expected: Any, actual: Any, rtol: float, atol: float, path:
     if matches:
         return True, ""
     return False, f"{path} {detail}"
+
+
+def _ensure_functional_interface(model: Any, module_fn: Any) -> None:
+    if not callable(module_fn):
+        raise TypeError("The functional module must expose a callable `module_fn`.")
+    parameter = inspect.signature(model.forward).parameters.get("fn")
+    if parameter is None or parameter.kind not in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    ):
+        raise TypeError("The functional Model.forward must accept an explicit `fn` keyword parameter.")
+
+
+def _call_injected_function(model: Any, args: list[Any], kwargs: dict[str, Any], fn: Callable[..., Any]) -> Any:
+    call_count = 0
+
+    def tracked_fn(*fn_args: Any, **fn_kwargs: Any) -> Any:
+        nonlocal call_count
+        call_count += 1
+        return fn(*fn_args, **fn_kwargs)
+
+    actual = model(*args, **kwargs, fn=tracked_fn)
+    if call_count == 0:
+        raise ValueError("The functional wrapper did not call the supplied HIP function.")
+    return actual
 
 
 def _measure_latency_ms(fn: Callable[[], Any], *, warmup: int, iterations: int) -> float:
@@ -178,6 +215,8 @@ def verify_candidate(
     if not torch.cuda.is_available():
         return VerificationResult(False, "CUDA/HIP device is not available.", compile_success=False)
 
+    compile_success = False
+    correctness_success = False
     try:
         original_module = load_python_module(
             original_module_path,
@@ -198,6 +237,7 @@ def verify_candidate(
         original_model = getattr(original_module, "Model")(*_clone_value(init_call_args), **_clone_value(init_call_kwargs))
         _set_seed(seed)
         functional_model = getattr(functional_module, "Model")(*_clone_value(init_call_args), **_clone_value(init_call_kwargs))
+        _ensure_functional_interface(functional_model, functional_module.module_fn)
 
         device = torch.device("cuda")
         original_model = original_model.to(device).eval()
@@ -212,12 +252,15 @@ def verify_candidate(
         hip_kwargs = _move_to_device(_clone_value(forward_kwargs), device)
 
         hip_fn = load_hip_forward(candidate_hip_path, build_dir, verbose=False)
+        compile_success = True
 
         with torch.no_grad():
             _set_seed(seed)
             expected = original_model(*_clone_value(module_args), **_clone_value(module_kwargs))
             _set_seed(seed)
-            actual = functional_model(*_clone_value(hip_args), **_clone_value(hip_kwargs), fn=hip_fn)
+            actual = _call_injected_function(
+                functional_model, _clone_value(hip_args), _clone_value(hip_kwargs), hip_fn
+            )
 
         matches, detail = _compare_outputs(expected, actual, rtol, atol)
         if not matches:
@@ -227,6 +270,7 @@ def verify_candidate(
                 compile_success=True,
                 correctness_success=False,
             )
+        correctness_success = True
 
         module_latency_ms = _measure_latency_ms(
             lambda: original_model(*module_args, **module_kwargs),
@@ -259,8 +303,8 @@ def verify_candidate(
         return VerificationResult(
             False,
             f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
-            compile_success=False,
-            correctness_success=False,
+            compile_success=compile_success,
+            correctness_success=correctness_success,
         )
     finally:
         if not keep_build_dir:

@@ -18,6 +18,8 @@ the following constraints:
 - Preserve the initialization and forward interfaces used by the original
   module. The generated `Model` must accept the same init inputs and forward
   inputs as the original module.
+- Add the optional `fn=module_fn` parameter to `Model.forward`.
+- Call `fn` with all computation inputs, parameters, and constants, and return its result.
 - Implement the computation with PyTorch functional operators whenever
   possible.
 - The generated file must be self-contained and importable.
@@ -114,10 +116,12 @@ class Model(nn.Module):
         conv = nn.ConvTranspose3d(in_channels, out_channels, kernel_size)
         self.conv_transpose_parameter = nn.Parameter(conv.weight)
         self.conv_transpose_bias = nn.Parameter(conv.bias)
+        self.stride = stride
+        self.padding = padding
 
-    def forward(self, x, stride, padding, fn=module_fn):
+    def forward(self, x, fn=module_fn):
         return fn(
-            x, stride, padding, self.conv_transpose_parameter, self.conv_transpose_bias
+            x, self.stride, self.padding, self.conv_transpose_parameter, self.conv_transpose_bias
         )
 
 batch_size = 16

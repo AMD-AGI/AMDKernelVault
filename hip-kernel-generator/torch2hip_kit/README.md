@@ -68,6 +68,8 @@ After re-checking the implementation, the project currently stands at:
   the paired functional file must expose `module_fn`, `Model`, `get_inputs`,
   and `get_init_inputs`; correctness inputs are always sourced from the
   original module file.
+  `Model.forward` must accept an explicit `fn` keyword parameter.
+  The wrapper must call the supplied function during the correctness check.
 
 ## Known Gaps And Boundaries
 
@@ -76,8 +78,40 @@ After re-checking the implementation, the project currently stands at:
 - Best-candidate selection is based on the highest recorded speedup among
   correctness-passing attempts; equal-speed ties currently keep the earlier
   success.
+- The selected candidate can be slower than PyTorch. The pipeline applies no
+  minimum speedup threshold.
 - The package is production-oriented in structure, but still a kit rather than
   a fully operationalized service.
+
+## Validation Scope
+
+The verifier calls the original `get_inputs()` once with the configured seed.
+It uses that argument set for correctness and timing.
+The kit does not create additional shape, stride, dtype, or boundary cases.
+Use separate reference tasks when you need those checks.
+
+Tensor comparison requires equal output shapes.
+It uses `torch.allclose` with default `rtol=1e-4`, `atol=1e-4`, and `equal_nan=True`.
+The checker applies no fixed tolerance rule for a dtype or operator.
+Input copies preserve tensor strides and storage offsets.
+Device transfers preserve these layouts for ordinary strided tensors.
+Sparse and quantized tensors use PyTorch's normal device transfer.
+
+The verifier rejects a wrapper that ignores the supplied HIP function.
+This check proves invocation on the sampled input.
+It does not prove equivalence for all inputs or establish complete dependence on the function's result.
+Runtime errors preserve the successful compile flag.
+Timing errors preserve successful compile and correctness flags.
+The pipeline selects candidates only when correctness and timing complete successfully.
+
+The timing loop measures repeated calls with CUDA/HIP events.
+It includes the functional wrapper's GPU operations.
+The loop reuses its inputs and models, so timing assumes stable repeated calls.
+The kit does not isolate each candidate in a separate process or impose a runtime timeout.
+
+Each retry receives prior code and verifier feedback.
+The kit uses one generation call per attempt and does not call a separate reflector model.
+The released code therefore demonstrates a feedback loop, not the full historical corpus protocol.
 
 ## Highlights
 
@@ -117,11 +151,25 @@ Supported provider names are the same:
 - `standard-claude`
 - `gemini`
 
+`openai` and `standard-openai` use the public OpenAI API.
+`claude` and `standard-claude` use the public Anthropic API.
+`gemini` uses Google's public OpenAI-compatible endpoint.
+The legacy provider names remain available as aliases.
+
+Original GPT-5 models use `max_completion_tokens` and the provider's default sampling.
+This includes `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, and their dated 2025 snapshots.
+The completion budget includes reasoning tokens, as the [Chat Completions reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) specifies.
+The adapter preserves the caller's exact model identifier.
+CLI `--temperature` applies only to models that support it.
+Other model families and Gemini retain their existing request parameters.
+
 The main compatibility note is API key resolution:
 
 - `TORCH2HIP_API_KEY` is supported.
 - `TORCH_MODU2FUNC_API_KEY` is also accepted for compatibility with the
   existing `torch_modu2func_kit` workflow.
+- The provider's standard environment variable is also accepted.
+  These variables are `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY` or `GOOGLE_API_KEY`.
 
 So compared with the earlier draft, the LLM call shape is now consistent:
 
@@ -203,6 +251,16 @@ Each attempt record stores:
 - module latency and HIP latency, if available
 - captured feedback or traceback
 
+Normal reruns retain matching success records and their selected outputs.
+Reuse checks source contents, output contents, generation settings, validation settings, client class, and model identifier.
+The records store fingerprints for these checks.
+Missing outputs trigger generation again.
+Existing stale or untracked outputs require `--overwrite` before replacement.
+The pipeline preserves pending records if a rerun stops before those samples finish.
+
+These checks do not record the complete GPU and compiler environment.
+Keep that environment separately when you need to reproduce a measured latency.
+
 ## Prompt Assets
 
 By default, `torch2hip_kit` is self-contained:
@@ -242,7 +300,7 @@ torch2hip \
   --output-dir ./output_hip \
   --artifacts-dir .artifacts \
   --provider openai \
-  --model-id dvue-aoai-001-gpt-5 \
+  --model-id gpt-4o \
   --api-key YOUR_API_KEY
 ```
 

@@ -1,6 +1,7 @@
 # Copyright(C) [2025] Advanced Micro Devices, Inc. All rights reserved.
 
 from typing import List
+import re
 import openai
 from tenacity import retry, stop_after_attempt, wait_random_exponential
 
@@ -23,7 +24,7 @@ class StandardOpenAIModel(BaseModel):
                  presence_penalty=0, 
                  frequency_penalty=0, 
                  max_tokens=5000) -> str:
-        response = self.client.chat.completions.create(
+        request = dict(
             model=self.model_id,
             messages=messages,
             temperature=temperature,
@@ -33,59 +34,36 @@ class StandardOpenAIModel(BaseModel):
             presence_penalty=presence_penalty,
             frequency_penalty=frequency_penalty,
         )
+        if re.fullmatch(r"gpt-5(?:-(?:mini|nano))?(?:-2025-\d{2}-\d{2})?", self.model_id):
+            request["max_completion_tokens"] = request.pop("max_tokens")
+            request.pop("temperature")
+        response = self.client.chat.completions.create(**request)
         if not response or not hasattr(response, 'choices') or len(response.choices) == 0:
             raise ValueError("No response choices returned from the API.")
         return response.choices[0].message.content
 
 
-class OpenAIModel(BaseModel):
-    def __init__(self, 
-                 model_id="GPT4o", 
-                 model_api_version='2024-06-01', 
+class OpenAIModel(StandardOpenAIModel):
+    """Compatibility adapter for the public OpenAI API."""
+
+    def __init__(self,
+                 model_id="gpt-4o",
+                 model_api_version="2024-06-01",
                  api_key=None):
-        assert api_key is not None, "no api key is provided."
-        self.model_id = model_id
+        # Retain the legacy argument for callers. The public API does not use it.
         self.model_api_version = model_api_version
+        super().__init__(model_id=model_id, api_key=api_key)
 
-        url = 'https://llm-api.amd.com'
-        headers = {
-            'Ocp-Apim-Subscription-Key': api_key 
-        }
-        model_api_version = '2024-06-01'
-        
-
-        self.client = openai.AzureOpenAI(
-            api_key='dummy',
-            api_version=self.model_api_version,
-            base_url=url,
-            default_headers=headers
-        )
-        self.client.base_url = '{0}/openai/deployments/{1}'.format(url, self.model_id)
-    
-    @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(5))
-    def generate(self, 
-                 messages: List, 
-                 temperature=1.0, 
-                 presence_penalty=0, 
-                 frequency_penalty=0, 
+    def generate(self,
+                 messages: List,
+                 temperature=1.0,
+                 presence_penalty=0,
+                 frequency_penalty=0,
                  max_tokens=5000) -> str:
-        # AMD API has a max_tokens limit of ~16000
-        max_tokens = min(max_tokens, 16000)
-        response = self.client.chat.completions.create(
-            model=self.model_id,
+        return super().generate(
             messages=messages,
             temperature=temperature,
-            n=1,
-            stream=False,
-            stop=None,
-            max_tokens=max_tokens,
             presence_penalty=presence_penalty,
             frequency_penalty=frequency_penalty,
-            logit_bias=None,
-            user=None
+            max_tokens=max_tokens,
         )
-        if not response or not hasattr(response, 'choices') or len(response.choices) == 0:
-            raise ValueError("No response choices returned from the API.")
-
-        return response.choices[0].message.content
-    

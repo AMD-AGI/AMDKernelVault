@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import inspect
 import math
 import random
 import sys
@@ -51,13 +52,15 @@ def _load_module(module_path: Path, module_name: str) -> ModuleType:
         raise ImportError(f"Unable to create import spec for {_path_text(module_path)}.")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    # Execute current bytes instead of a timestamp-based bytecode cache.
+    exec(compile(module_path.read_bytes(), str(module_path), "exec", dont_inherit=True), module.__dict__)
     return module
 
 
 def _clone_value(value: Any) -> Any:
     if isinstance(value, torch.Tensor):
-        return value.clone()
+        # Verification needs independent values with the original storage layout.
+        return copy.deepcopy(value.detach()).requires_grad_(value.requires_grad)
     if isinstance(value, list):
         return [_clone_value(item) for item in value]
     if isinstance(value, tuple):
@@ -99,6 +102,8 @@ def _compare_scalars(expected: Any, actual: Any, rtol: float, atol: float) -> tu
 
 def _compare_outputs(expected: Any, actual: Any, rtol: float, atol: float, path: str = "output") -> tuple[bool, str]:
     if isinstance(expected, torch.Tensor) and isinstance(actual, torch.Tensor):
+        if expected.shape != actual.shape:
+            return False, f"{path} shape mismatch: expected {tuple(expected.shape)}, got {tuple(actual.shape)}."
         matches = torch.allclose(
             expected.detach().cpu(),
             actual.detach().cpu(),
@@ -155,6 +160,9 @@ def verify_candidate(
         )
         _ensure_required_exports(candidate_module, candidate_module_path, REQUIRED_CANDIDATE_EXPORTS)
         _ensure_required_exports(original_module, original_module_path, REQUIRED_ORIGINAL_EXPORTS)
+        module_fn = getattr(candidate_module, "module_fn")
+        if not callable(module_fn):
+            raise TypeError("Candidate module_fn must be callable.")
 
         _set_seed(seed)
         init_args = getattr(original_module, "get_init_inputs")()
@@ -175,6 +183,22 @@ def verify_candidate(
         candidate_forward_args = _clone_value(original_forward_args)
         candidate_forward_kwargs = _clone_value(original_forward_kwargs)
 
+        fn_calls = 0
+
+        def tracked_fn(*args, **kwargs):
+            nonlocal fn_calls
+            fn_calls += 1
+            return module_fn(*args, **kwargs)
+
+        forward_signature = inspect.signature(candidate_model.forward)
+        fn_parameter = forward_signature.parameters.get("fn")
+        if fn_parameter is None or fn_parameter.kind not in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            raise TypeError("Candidate Model.forward must accept the keyword parameter fn.")
+        forward_signature.bind(*candidate_forward_args, **candidate_forward_kwargs, fn=tracked_fn)
+
         with torch.no_grad():
             _set_seed(seed)
             expected = original_model(*_clone_value(original_forward_args), **_clone_value(original_forward_kwargs))
@@ -182,8 +206,27 @@ def verify_candidate(
             actual = candidate_model(*candidate_forward_args, **candidate_forward_kwargs)
 
         matches, detail = _compare_outputs(expected, actual, rtol, atol)
-        if matches:
-            return VerificationResult(True, "Outputs matched within tolerance.")
-        return VerificationResult(False, detail)
+        if not matches:
+            return VerificationResult(False, detail)
+
+        # A fresh model keeps the injected call independent of forward mutations.
+        _set_seed(seed)
+        injected_model = getattr(candidate_module, "Model")(
+            *_clone_value(original_init_args), **_clone_value(original_init_kwargs)
+        )
+        injected_model.eval()
+        with torch.no_grad():
+            _set_seed(seed)
+            injected = injected_model(
+                *_clone_value(original_forward_args),
+                **_clone_value(original_forward_kwargs),
+                fn=tracked_fn,
+            )
+        if fn_calls == 0:
+            return VerificationResult(False, "Candidate Model.forward did not call the injected fn.")
+        matches, detail = _compare_outputs(expected, injected, rtol, atol)
+        if not matches:
+            return VerificationResult(False, f"Injected fn: {detail}")
+        return VerificationResult(True, "Default and injected outputs matched within tolerance.")
     except Exception as exc:
         return VerificationResult(False, f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}")

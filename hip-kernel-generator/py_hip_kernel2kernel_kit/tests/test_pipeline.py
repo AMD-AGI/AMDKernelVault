@@ -7,6 +7,8 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
+import pytest
+
 import py_hip_kernel2kernel_kit.pipeline as pipeline_module
 from py_hip_kernel2kernel_kit.config import AttemptRecord, ConversionRecord, PipelineConfig
 from py_hip_kernel2kernel_kit.verifier import BaselineVerificationResult, CandidateVerificationResult
@@ -103,8 +105,19 @@ class FakeVerificationContext:
 
 def make_conversion_record(config: PipelineConfig, source_path: Path, *, status: str, attempts_used: int = 0) -> ConversionRecord:
     relative_path = source_path.relative_to(config.baseline_hip_dir)
+    input_fingerprint = output_sha256 = None
     attempts = []
     if status == "success":
+        for root, content in ((config.module_dir, MODULE_SOURCE), (config.functional_dir, FUNCTIONAL_SOURCE)):
+            paired_path = root / relative_path.with_suffix(".py")
+            paired_path.parent.mkdir(parents=True, exist_ok=True)
+            if not paired_path.exists():
+                paired_path.write_text(content, encoding="utf-8")
+        output_path = config.output_dir / relative_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+        input_fingerprint = pipeline_module._input_fingerprint(source_path, config)
+        output_sha256 = pipeline_module._file_sha256(output_path)
         attempts = [
             AttemptRecord(
                 attempt=1,
@@ -144,6 +157,8 @@ def make_conversion_record(config: PipelineConfig, source_path: Path, *, status:
         module_latency_ms=3.0,
         baseline_latency_ms=2.0,
         final_error="old failure" if status == "failed" else None,
+        input_fingerprint=input_fingerprint,
+        output_sha256=output_sha256,
     )
 
 
@@ -344,6 +359,12 @@ def test_run_optimization_pipeline_writes_json_records(monkeypatch, tmp_path: Pa
     assert successes[0]["attempts"][0]["candidate_path"] == (
         artifacts_dir / "candidates" / "level_1" / "sample.attempt_1.hip"
     ).as_posix()
+    assert len(successes[0]["input_fingerprint"]) == 64
+    assert len(successes[0]["output_sha256"]) == 64
+    # The client has no responses left. An unchanged rerun must preserve the verified record.
+    assert pipeline_module.run_optimization_pipeline(client, config) == summary
+    assert json.loads(config.success_file.read_text(encoding="utf-8")) == successes
+    assert json.loads((config.success_cases_dir / "level_1" / "sample.json").read_text(encoding="utf-8")) == successes[0]
 
 
 def test_run_optimization_pipeline_rewrites_success_case_record_directory(monkeypatch, tmp_path: Path) -> None:
@@ -732,3 +753,123 @@ def test_run_optimization_pipeline_resume_with_overwrite_reruns_success(monkeypa
     assert summary == {"total": 1, "success": 1, "failed": 0, "skipped": 0}
     assert rerun_paths == ["level_1/sample.hip"]
     assert records[0]["attempts_used"] == 2
+
+
+def _saved_success_fixture(tmp_path: Path, *, resume: bool = False):
+    config = PipelineConfig(
+        baseline_hip_dir=tmp_path / "hip",
+        module_dir=tmp_path / "module",
+        functional_dir=tmp_path / "functional",
+        output_dir=tmp_path / "output",
+        artifacts_dir=tmp_path / "artifacts",
+        resume=resume,
+        max_attempts=1,
+        system_instruction="SYSTEM",
+        few_shot_examples="FEW SHOT",
+    ).with_defaults()
+    source_path = config.baseline_hip_dir / "sample.hip"
+    source_path.parent.mkdir()
+    source_path.write_text(HIP_SOURCE, encoding="utf-8")
+    saved_record = make_conversion_record(config, source_path, status="success", attempts_used=1)
+    config.records_file.parent.mkdir(parents=True, exist_ok=True)
+    config.records_file.write_text(json.dumps([asdict(saved_record)]), encoding="utf-8")
+    return config, source_path, saved_record
+
+
+def test_default_rerun_preserves_verified_success_records(tmp_path: Path) -> None:
+    config, _, saved_record = _saved_success_fixture(tmp_path)
+    summary = pipeline_module.run_optimization_pipeline(FakeClient([]), config)
+    assert summary == {"total": 1, "success": 1, "failed": 0, "skipped": 0}
+    assert json.loads(config.success_file.read_text()) == [asdict(saved_record)]
+    shard_path = config.success_cases_dir / "sample.json"
+    first_stat = shard_path.stat().st_mtime_ns
+    pipeline_module.run_optimization_pipeline(FakeClient([]), config)
+    assert json.loads(shard_path.read_text()) == asdict(saved_record)
+    assert shard_path.stat().st_mtime_ns == first_stat
+
+
+@pytest.mark.parametrize("num_workers", [1, 2])
+def test_interrupted_overwrite_preserves_prior_success(monkeypatch, tmp_path: Path, num_workers: int) -> None:
+    config, source_path, saved_record = _saved_success_fixture(tmp_path, resume=True)
+    pipeline_module._persist_records(config, [saved_record])
+    config.overwrite = True
+    config.num_workers = num_workers
+    output_path = Path(saved_record.output_path)
+    output_before = output_path.read_bytes()
+    called_paths = []
+
+    def interrupt_before_result(path, client, config):
+        called_paths.append(path)
+        raise KeyboardInterrupt("Interrupted before the replacement returned.")
+
+    monkeypatch.setattr(pipeline_module, "convert_single_file", interrupt_before_result)
+    with pytest.raises(KeyboardInterrupt):
+        pipeline_module.run_optimization_pipeline(FakeClient([]), config)
+
+    assert called_paths == [source_path]
+    assert json.loads(config.records_file.read_text()) == [asdict(saved_record)]
+    assert json.loads(config.success_file.read_text()) == [asdict(saved_record)]
+    assert json.loads((config.success_cases_dir / "sample.json").read_text()) == asdict(saved_record)
+    assert output_path.read_bytes() == output_before
+
+
+def test_resume_regenerates_missing_output(monkeypatch, tmp_path: Path) -> None:
+    config, source_path, saved_record = _saved_success_fixture(tmp_path, resume=True)
+    Path(saved_record.output_path).unlink()
+    rerun_paths = []
+
+    def regenerate(path, client, config):
+        rerun_paths.append(path)
+        return make_conversion_record(config, path, status="success", attempts_used=1)
+
+    monkeypatch.setattr(pipeline_module, "convert_single_file", regenerate)
+    summary = pipeline_module.run_optimization_pipeline(FakeClient([]), config)
+    assert summary["success"] == 1
+    assert rerun_paths == [source_path]
+    assert Path(saved_record.output_path).exists()
+
+
+@pytest.mark.parametrize("changed", ["baseline", "module", "functional", "output", "tolerance", "model", "legacy"])
+def test_stale_success_requires_overwrite(changed: str, tmp_path: Path) -> None:
+    config, source_path, saved_record = _saved_success_fixture(tmp_path, resume=True)
+    if changed in {"baseline", "module", "functional", "output"}:
+        path = {
+            "baseline": source_path,
+            "module": config.module_dir / "sample.py",
+            "functional": config.functional_dir / "sample.py",
+            "output": Path(saved_record.output_path),
+        }[changed]
+        path.write_text(path.read_text() + "\n// changed\n")
+    elif changed == "tolerance":
+        config.rtol = 1e-5
+    elif changed == "model":
+        config.model_id = "different-model"
+    else:
+        payload = asdict(saved_record)
+        payload.pop("input_fingerprint")
+        payload.pop("output_sha256")
+        config.records_file.write_text(json.dumps([payload]))
+    output_before = Path(saved_record.output_path).read_bytes()
+    summary = pipeline_module.run_optimization_pipeline(FakeClient([]), config)
+    assert summary == {"total": 1, "success": 0, "failed": 1, "skipped": 0}
+    assert "--overwrite" in json.loads(config.failure_file.read_text())[0]["final_error"]
+    assert json.loads(config.success_file.read_text()) == []
+    assert Path(saved_record.output_path).read_bytes() == output_before
+
+
+def test_changed_header_invalidates_saved_success(tmp_path: Path) -> None:
+    config, source_path, saved_record = _saved_success_fixture(tmp_path)
+    include_dir = source_path.parent / "include"
+    include_dir.mkdir()
+    (include_dir / "helper.h").write_text("// added header")
+    summary = pipeline_module.run_optimization_pipeline(FakeClient([]), config)
+    assert summary["failed"] == 1
+    assert summary["success"] == 0
+
+
+def test_untracked_existing_output_is_not_a_verified_success(tmp_path: Path) -> None:
+    config, _, saved_record = _saved_success_fixture(tmp_path)
+    config.records_file.unlink()
+    summary = pipeline_module.run_optimization_pipeline(FakeClient([]), config)
+    assert summary["failed"] == 1
+    assert Path(saved_record.output_path).exists()
