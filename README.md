@@ -203,7 +203,7 @@ Current repository ownership is defined in [`.github/CODEOWNERS`](.github/CODEOW
 Temporary owners for the repository are:
 
 - `@AMD-AGI/AI-Algorithm`
-- `@liuji` `@zepingli` `@chushi` `@zihao` `@puyuan`
+- `@liuji` `@Majumder Saptarshi` `@zepingli` `@chushi` `@zihao` `@puyuan`
 
 Because the code for each training stage has not been added yet, ownership is
 currently maintained at the repository level. More granular ownership can be
