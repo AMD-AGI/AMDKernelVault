@@ -1,11 +1,10 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat)](LICENSE)
 
-# hip-kernel-llm-lab
+# AMDKernelVault
 
-> A HIP kernel LLM training framework covering continued pretraining, supervised fine-tuning, and reinforcement learning.
+> An LLM training framework for HIP and Triton kernel generation, covering continued pretraining, supervised fine-tuning, and reinforcement learning.
 
-`hip-kernel-llm-lab` is a repository for training and evolving LLMs toward HIP
-kernel generation, understanding, optimization, and related engineering tasks.
+`AMDKernelVault` is a repository for training and evolving LLMs toward HIP and Triton kernel generation, understanding, optimization, and related engineering tasks.
 The project is organized around three training stages and the supporting kernel
 data-generation/evaluation tooling needed to run them:
 
@@ -18,7 +17,7 @@ data-generation/evaluation tooling needed to run them:
 ## Repository Layout
 
 ```text
-hip_kernel_llm_lab/
+AMDKernelVault/
 ├── cpt/                    # continued pretraining launchers and configs
 ├── sft/                    # supervised fine-tuning launchers and configs
 ├── rl/                     # HIP and Triton reinforcement learning stacks
@@ -48,8 +47,7 @@ optimization suggestions, and reasoning over kernel implementations.
 
 The reinforcement learning stage is intended for further improving model
 behavior using task-specific rewards, such as correctness, compilability,
-performance-oriented preferences, or other training objectives relevant to HIP
-kernel workflows.
+performance-oriented preferences, or other training objectives relevant to HIP and Triton kernel workflows.
 
 ### `hip-kernel-generator`
 
@@ -67,8 +65,7 @@ that can be inspected or replayed during model development.
 
 The intended high-level training flow is:
 
-1. Use continued pretraining to adapt the base model to HIP kernel and
-   GPU-system-specific knowledge.
+1. Use continued pretraining to adapt the base model to HIP and Triton kernel and GPU-system-specific knowledge.
 2. Use supervised fine-tuning to teach task-oriented instruction behavior.
 3. Use reinforcement learning to optimize for downstream quality signals such as
    correctness, preference alignment, and performance-related objectives.
@@ -194,6 +191,7 @@ This repository contains runnable assets for all main stages:
   execution service, with code-only setup and validation tools.
 - `hip-kernel-generator/` provides installable tools for PyTorch-to-HIP and
   HIP-to-HIP generation/optimization workflows.
+- `triton-kernel-generator/` provides Triton generation and AMD correctness and latency verification.
 - Stage-specific READMEs contain the operational details for each workflow.
 
 ## Code Ownership
@@ -202,8 +200,8 @@ Current repository ownership is defined in [`.github/CODEOWNERS`](.github/CODEOW
 
 Temporary owners for the repository are:
 
-- `@AMD-AGI/AI-Algorithm`
-- `@liuji` `@Majumder Saptarshi` `@zepingli` `@chushi` `@zihao` `@puyuan`
+- `@AMD-AGI` 
+- `@liuji` `@Majumder Saptarshi` `@Ouyang Vincent` `@zepingli` `@chushi` `@zihao` `@puyuan`
 
 Because the code for each training stage has not been added yet, ownership is
 currently maintained at the repository level. More granular ownership can be
